@@ -884,6 +884,11 @@ class LidarCameraFusion:
                                     "point_count": int(len(best_cluster)),
                                     "cluster_pts": best_cluster
                                 }
+                # 显式释放 Open3D C++ 对象，避免 GC 不及时导致内存累积
+                try:
+                    del pcd
+                except Exception:
+                    pass
             enhanced_results.append(result)
             t_cluster_total += (time.time() - t_box_start)
 
@@ -989,7 +994,18 @@ class FusionServerNode(Node):
         self.latest_image2 = None
         self.latest_height_points = []
         self.car_tracker.reset()
+        # 显式释放 NPU 引擎，避免 ACL 内存不归还
+        try:
+            if self.fusion and self.fusion.engine:
+                self.fusion.engine.release()
+        except Exception as e:
+            self.get_logger().warn(f"NPU 引擎释放异常: {e}")
         self.get_logger().info("❌ Teardown done.")
+
+    def destroy_node(self):
+        """重写销毁逻辑，确保节点退出时也能释放 NPU 资源。"""
+        self._teardown()
+        super().destroy_node()
 
     def cloud_cb(self, msg):
         with self.data_lock: self.latest_cloud = msg
