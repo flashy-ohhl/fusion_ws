@@ -1,0 +1,28 @@
+# ROS2 build artifacts
+build/
+install/
+log/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Model files (large binaries)
+model/*.om
+model/*.onnx
+model/*.pb
+
+# Output / data
+output/
+shujuji/
+files.zip

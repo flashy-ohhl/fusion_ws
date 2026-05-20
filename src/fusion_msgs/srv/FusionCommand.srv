@@ -1,0 +1,12 @@
+string lidar_id
+string camera1_id
+string camera2_id
+int64 enable_mode       
+string pointcloud_topic 
+string camera1_topic            
+string camera2_topic            
+string pointcloud_topic_r   
+string wall_info_topic     
+---
+bool success
+string message
