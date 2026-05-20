@@ -88,11 +88,12 @@ class SafeAclLiteEngine:
         print("✅ 初始化 AclLiteResource")
         self.resource = AclLiteResource(self.device_id)
         self.resource.init()
-        # image_proc 仍然初始化，保留旧接口能用（infer_from_jpeg_path）
-        self.image_proc = AclLiteImageProc(self.resource)
+        # ❌ 禁用 DVPP：infer_from_bgr 完全走 CPU 预处理，不需要 AclLiteImageProc
+        # 避免 Atlas 500 A2 上 DVPP 预分配数 GB NPU 内存
+        self.image_proc = None
         print("✅ 加载模型:", self.model_path)
         self.model = AclLiteModel(self.model_path)
-        print("✅✅✅ 推理引擎初始化完成（支持BGR直传NV12）")
+        print("✅✅✅ 推理引擎初始化完成（支持BGR直传NV12，DVPP已禁用）")
 
     # ---------------- 新接口：BGR 直接转 NV12 推理 ----------------
     def infer_from_bgr(self, bgr_image: np.ndarray) -> Optional[List[np.ndarray]]:
@@ -112,45 +113,25 @@ class SafeAclLiteEngine:
             traceback.print_exc()
             return None
 
-    # ---------------- 原始接口：JPEG → DVPP（保留作回退） ----------------
+    # ---------------- 原始接口：JPEG → DVPP（已禁用，如需使用请先开启 DVPP） ----------------
     def infer_from_jpeg_path(self, jpeg_path: str) -> Optional[List[np.ndarray]]:
-        if not jpeg_path or (not os.path.exists(jpeg_path)):
-            print(f"❌ infer_from_jpeg_path: 文件不存在: {jpeg_path}")
-            return None
-        try:
-            acl_img = AclLiteImage(jpeg_path)
-            dvpp_in = acl_img.copy_to_dvpp()
-            yuv = self.image_proc.jpegd(dvpp_in)
-            resized = self.image_proc.resize(yuv, self.model_w, self.model_h)
-            return self.model.execute([resized])
-        except Exception as e:
-            print(f"❌ DVPP 推理失败 (path): {e}")
-            return None
+        print("⚠️ infer_from_jpeg_path 已禁用（DVPP 未初始化），请使用 infer_from_bgr")
+        return None
 
     def infer_from_jpeg_bytes(self, jpeg_bytes: Union[bytes, bytearray]) -> Optional[List[np.ndarray]]:
-        if jpeg_bytes is None or len(jpeg_bytes) == 0:
-            return None
-        tmp_path = None
-        try:
-            fd, tmp_path = tempfile.mkstemp(suffix=".jpg")
-            os.close(fd)
-            with open(tmp_path, "wb") as f:
-                f.write(jpeg_bytes)
-            return self.infer_from_jpeg_path(tmp_path)
-        except Exception as e:
-            print(f"❌ DVPP 推理失败 (bytes): {e}")
-            return None
-        finally:
-            if tmp_path and os.path.exists(tmp_path):
-                try: os.remove(tmp_path)
-                except Exception: pass
+        print("⚠️ infer_from_jpeg_bytes 已禁用（DVPP 未初始化），请使用 infer_from_bgr")
+        return None
 
     def release(self):
         try:
             if self.model is not None:
                 self.model.__del__()
+            # DVPP 已禁用，仅在有实例时才释放
             if self.image_proc is not None:
-                self.image_proc.__del__()
+                try:
+                    self.image_proc.__del__()
+                except Exception:
+                    pass
             if self.resource is not None:
                 if hasattr(self.resource, "release"):
                     self.resource.release()
