@@ -4,6 +4,7 @@ import yaml
 import threading
 from collections import deque
 from dataclasses import dataclass
+from enum import IntEnum
 from typing import List, Dict, Any, Optional
 
 import numpy as np
@@ -23,6 +24,25 @@ from fusion_msgs.msg import FusionResult, Box2D, Box3D, AlarmTTJ
 from fusion_msgs.srv import FusionCommand
 
 from .acllite_safe_engine import SafeAclLiteEngine
+
+
+# ======================= 运行模式 =======================
+class RunMode(IntEnum):
+    DEBUG_SAVE = 1      # 计时 + 保存图像到本地 + 终端输出
+    DEBUG_TIMING = 2    # 仅计时 + 终端输出，不保存图像
+    PRODUCTION = 3      # 纯净运行：无计时、无保存、无终端输出
+
+
+RUN_MODE = RunMode.DEBUG_TIMING
+
+# 模式一下的图像保存配置
+DEBUG_OUTPUT_DIR = os.path.join(os.getcwd(), 'output')
+DEBUG_SAVE_EXT = '.jpg'
+
+# 模式一/二下的终端输出开关
+MODE_SAVE = (RUN_MODE == RunMode.DEBUG_SAVE)
+MODE_VERBOSE = (RUN_MODE <= RunMode.DEBUG_TIMING)
+
 
 # ======================= 全局配置 =======================
 TARGET_CLASSES = {
@@ -65,11 +85,6 @@ ALARM_TTJ_ANGLE_THRESHOLD_DEG = 20.0  # a 与 b 夹角小于此值 → 违规
 ALARM_TTJ_TRACK_MATCH_DIST = 5.0      # car 跨帧关联的最近邻距离阈值 (米)
 ALARM_TTJ_TRACK_MAX_MISSED = 10       # 连续未匹配多少次后丢弃轨迹
 
-# === 调试: 把每次 _process 的所有图像保存到 output/<frame_xxx_ts>/ ===
-DEBUG_SAVE_OUTPUT = False                                     # 总开关，关掉就完全跳过 IO
-DEBUG_OUTPUT_DIR = os.path.join(os.getcwd(), 'output')       # 启动时 cwd 是工作空间根
-DEBUG_SAVE_EXT = '.jpg'                                      # 想看无损用 '.png'
-
 
 @dataclass
 class BoundBox:
@@ -79,8 +94,8 @@ class BoundBox:
 
 # =================== 工具函数 ===================
 def make_debug_frame_dir(frame_idx: int) -> Optional[str]:
-    """为本次 _process 创建一个子文件夹，返回路径。开关关或失败时返回 None。"""
-    if not DEBUG_SAVE_OUTPUT:
+    """为本次 _process 创建一个子文件夹，返回路径。仅模式一有效。"""
+    if not MODE_SAVE:
         return None
     try:
         ts = time.strftime('%Y%m%d_%H%M%S')
@@ -88,18 +103,20 @@ def make_debug_frame_dir(frame_idx: int) -> Optional[str]:
         os.makedirs(sub, exist_ok=True)
         return sub
     except Exception as e:
-        print(f"[debug] make_debug_frame_dir failed: {e}")
+        if MODE_VERBOSE:
+            print(f"[debug] make_debug_frame_dir failed: {e}")
         return None
 
 
 def save_debug_img(frame_dir: Optional[str], name: str, img: Optional[np.ndarray]) -> None:
-    """保存一张 BGR 图像到 frame_dir/name。frame_dir 或 img 为空时直接跳过。"""
-    if frame_dir is None or img is None:
+    """保存一张 BGR 图像到 frame_dir/name。仅模式一有效。"""
+    if not MODE_SAVE or frame_dir is None or img is None:
         return
     try:
         cv2.imwrite(os.path.join(frame_dir, name + DEBUG_SAVE_EXT), img)
     except Exception as e:
-        print(f"[debug] save_debug_img {name} failed: {e}")
+        if MODE_VERBOSE:
+            print(f"[debug] save_debug_img {name} failed: {e}")
 
 
 def nms_per_class(boxes: List[BoundBox], iou_thr: float = 0.45) -> List[BoundBox]:
@@ -172,7 +189,8 @@ def robust_pointcloud_conversion(msg: PointCloud2) -> Optional[np.ndarray]:
         
         return pts[mask]
     except Exception as e:
-        print(f"Fast PC conversion failed: {e}")
+        if MODE_VERBOSE:
+            print(f"Fast PC conversion failed: {e}")
         return None
 
 
@@ -712,8 +730,9 @@ class LidarCameraFusion:
 
         if setup_yaml: self._load_setup_yaml(setup_yaml)
         if camchain_yaml: self._load_camchain_yaml(camchain_yaml)
-        print("已加载的外参矩阵:\n", self.T_lidar_to_cam)
-        print("已加载的相机内参:\n", self.intrinsics)
+        if MODE_VERBOSE:
+            print("已加载的外参矩阵:\n", self.T_lidar_to_cam)
+            print("已加载的相机内参:\n", self.intrinsics)
         self.engine = SafeAclLiteEngine(self.model_path, self.model_w, self.model_h, device_id=0)
 
     def _load_setup_yaml(self, path):
@@ -731,7 +750,8 @@ class LidarCameraFusion:
                 self.z_max_filter = y['z_filter'].get('max', self.z_max_filter)
             if 'xy_max_dist' in y: self.xy_max_dist = float(y['xy_max_dist'])
         except Exception as e:
-            print(f"Error loading setup YAML: {e}")
+            if MODE_VERBOSE:
+                print(f"Error loading setup YAML: {e}")
 
     def _load_camchain_yaml(self, path):
         try:
@@ -741,7 +761,8 @@ class LidarCameraFusion:
             if 'cam2' in cam and 'intrinsics' in cam['cam2']:
                 self.intrinsics['cam2'] = list(map(float, cam['cam2']['intrinsics'][:4]))
         except Exception as e:
-            print(f"Error loading camchain YAML: {e}")
+            if MODE_VERBOSE:
+                print(f"Error loading camchain YAML: {e}")
 
     def _infer_yolo_from_frame(self, frame):
         """
@@ -750,7 +771,8 @@ class LidarCameraFusion:
         try:
             return self.engine.infer_from_bgr(frame)
         except Exception as e:
-            print(f"❌ 推理失败: {e}")
+            if MODE_VERBOSE:
+                print(f"❌ 推理失败: {e}")
             return None
 
     def process_image_array(self, frame):
@@ -892,7 +914,8 @@ class LidarCameraFusion:
             enhanced_results.append(result)
             t_cluster_total += (time.time() - t_box_start)
 
-        print(f"    [{cam_id}细节] 矩阵投影={t_filter-t_proj:.3f}s, 图像绘制={t_uv-t_filter:.3f}s, 聚类循环({len(dets)}次)={t_cluster_total:.3f}s")
+        if MODE_VERBOSE:
+            print(f"    [{cam_id}细节] 矩阵投影={t_filter-t_proj:.3f}s, 图像绘制={t_uv-t_filter:.3f}s, 聚类循环({len(dets)}次)={t_cluster_total:.3f}s")
         return vis, enhanced_results
 
 
@@ -939,18 +962,25 @@ class FusionServerNode(Node):
         # 跨帧 car 跟踪器（用于 alarm_ttj 轨迹拟合）
         self.car_tracker = CarTracker()
 
-        # 调试: 每次 _process 落盘所有图像
+        # 模式一下，初始化图像落盘目录
         self.frame_idx = 0
-        if DEBUG_SAVE_OUTPUT:
+        if MODE_SAVE:
             try:
                 os.makedirs(DEBUG_OUTPUT_DIR, exist_ok=True)
-                self.get_logger().info(f"📁 调试图像将保存到: {DEBUG_OUTPUT_DIR}")
+                if MODE_VERBOSE:
+                    self.get_logger().info(f"📁 调试图像将保存到: {DEBUG_OUTPUT_DIR}")
             except Exception as e:
-                self.get_logger().warn(f"创建 DEBUG_OUTPUT_DIR 失败: {e}")
+                if MODE_VERBOSE:
+                    self.get_logger().warn(f"创建 DEBUG_OUTPUT_DIR 失败: {e}")
+
+        # 模式三：关闭 info/warn 级别日志，只保留 error
+        if RUN_MODE == RunMode.PRODUCTION:
+            self.get_logger().set_level(rclpy.logging.LoggingSeverity.ERROR)
 
         self.srv = self.create_service(FusionCommand, 'fusion_command', self.handle_cmd)
         self.timer = self.create_timer(1.0, self.timer_cb)
-        self.get_logger().info("✅ Node Ready. Waiting for Topic-based command...")
+        if MODE_VERBOSE:
+            self.get_logger().info("✅ Node Ready. Waiting for Topic-based command...")
 
     def _setup(self, t_pc, t_img1, t_img2, t_pub, t_wall):
         qos_sensor = qos_profile_sensor_data
