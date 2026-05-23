@@ -6,7 +6,8 @@ string pointcloud_topic
 string camera1_topic            
 string camera2_topic            
 string pointcloud_topic_r   
-string wall_info_topic     
+string wall_info_topic
+string rtsp01              # 动态发布 image3 的话题名，空字符串表示不启用
 ---
 bool success
 string message

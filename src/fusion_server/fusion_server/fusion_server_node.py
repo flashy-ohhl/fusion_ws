@@ -948,6 +948,8 @@ class FusionServerNode(Node):
         self.sub_img2 = None
         self.sub_wall = None
         self.pub = None
+        self.rtsp_pub = None          # 动态 image3 发布器
+        self.rtsp_topic = ""          # rtsp 话题名
 
         self.latest_cloud = None
         self.latest_image1 = None
@@ -1009,9 +1011,18 @@ class FusionServerNode(Node):
         if self.pub: self.destroy_publisher(self.pub)
         self.pub = self.create_publisher(FusionResult, t_pub, 10)
 
-        self.get_logger().info(
-            f"✅ Setup OK: PointCloud={t_pc}, Cam1={t_img1}, "
-            f"Cam2={t_img2}, WallInfo={t_wall or '未指定'}")
+        # 动态创建 image3 的独立发布器（rtsp 话题）
+        if self.rtsp_pub: self.destroy_publisher(self.rtsp_pub)
+        self.rtsp_pub = None
+        if self.rtsp_topic:
+            self.rtsp_pub = self.create_publisher(Image, self.rtsp_topic, 10)
+            if MODE_VERBOSE:
+                self.get_logger().info(f"✅ RTSP 发布器创建: {self.rtsp_topic}")
+
+        if MODE_VERBOSE:
+            self.get_logger().info(
+                f"✅ Setup OK: PointCloud={t_pc}, Cam1={t_img1}, "
+                f"Cam2={t_img2}, WallInfo={t_wall or '未指定'}, RTSP={self.rtsp_topic or '未启用'}")
 
     def _teardown(self):
         if self.sub_pc: self.destroy_subscription(self.sub_pc); self.sub_pc = None
@@ -1019,6 +1030,8 @@ class FusionServerNode(Node):
         if self.sub_img2: self.destroy_subscription(self.sub_img2); self.sub_img2 = None
         if self.sub_wall: self.destroy_subscription(self.sub_wall); self.sub_wall = None
         if self.pub: self.destroy_publisher(self.pub); self.pub = None
+        if self.rtsp_pub: self.destroy_publisher(self.rtsp_pub); self.rtsp_pub = None
+        self.rtsp_topic = ""
         self.latest_cloud = None
         self.latest_image1 = None
         self.latest_image2 = None
@@ -1071,6 +1084,7 @@ class FusionServerNode(Node):
             self.pc_topic = getattr(req, 'pointcloud_topic', '')
             self.pub_topic = getattr(req, 'pointcloud_topic_r', '')
             self.wall_info_topic = getattr(req, 'wall_info_topic', '') or ""
+            self.rtsp_topic = getattr(req, 'rtsp01', '') or ""
             try:
                 self._setup(self.pc_topic, self.camera1_topic, self.camera2_topic,
                             self.pub_topic, self.wall_info_topic)
@@ -1268,18 +1282,22 @@ class FusionServerNode(Node):
 
         if self.pub:
             self.pub.publish(res)
+            # 如果启用了 RTSP 话题，单独发布 image3
+            if self.rtsp_pub and hasattr(res, 'image3') and res.image3 is not None:
+                self.rtsp_pub.publish(res.image3)
             t_total_end = time.time()
             n_alarm = sum(1 for a in alarm_list if a.status)
-            self.get_logger().info(
-                f"✅ Pub结果:\n"
-                f"  - 点云解析: {t_pc_end-t_pc_start:.3f}s\n"
-                f"  - 空间裁剪(无损): {t_downsample_end-t_downsample_start:.3f}s\n"
-                f"  - 发布开销: {t_total_end-t_bev_end:.3f}s\n"
-                f"  👉 总计总耗时: {t_total_end-t_start:.3f}s | 2D: {len(res.box_1)}+{len(res.box_2)}, "
-                f"3D: {len(all_enhanced_results)} | wall_pts={len(height_points)}, "
-                f"wall_segs={len(wall_segments)} | cars={len(car_results)}, alarm={n_alarm}"
-                + (f"\n  - 调试落盘: {frame_dir}" if frame_dir else "")
-            )
+            if MODE_VERBOSE:
+                self.get_logger().info(
+                    f"✅ Pub结果:\n"
+                    f"  - 点云解析: {t_pc_end-t_pc_start:.3f}s\n"
+                    f"  - 空间裁剪(无损): {t_downsample_end-t_downsample_start:.3f}s\n"
+                    f"  - 发布开销: {t_total_end-t_bev_end:.3f}s\n"
+                    f"  👉 总计总耗时: {t_total_end-t_start:.3f}s | 2D: {len(res.box_1)}+{len(res.box_2)}, "
+                    f"3D: {len(all_enhanced_results)} | wall_pts={len(height_points)}, "
+                    f"wall_segs={len(wall_segments)} | cars={len(car_results)}, alarm={n_alarm}"
+                    + (f"\n  - 调试落盘: {frame_dir}" if frame_dir else "")
+                )
 
         # 自增帧号（无论是否成功 publish）
         self.frame_idx += 1
